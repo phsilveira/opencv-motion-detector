@@ -115,10 +115,10 @@ while True:
 
     # Fill in holes via dilate(), and find contours of the thesholds
     thresh = cv2.dilate(thresh, None, iterations = 2)
-    _, cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     # loop over the contours
-    for c in cnts:
+    for c in contours:
 
         # Save the coordinates of all found contours
         (x, y, w, h) = cv2.boundingRect(c)
