@@ -149,7 +149,7 @@ class MotionDetector:
         thresh = cv2.threshold(frame_delta, self.threshold, 255, cv2.THRESH_BINARY)[1]
         
         # Dilate to fill in holes
-        thresh = cv2.dilate(thresh, None, iterations=2)
+        thresh = cv2.dilate(thresh, None, iterations=10)
         contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Check for motion in contours
@@ -288,52 +288,7 @@ class MotionDetector:
         if not base64_images:
             return "No valid images to analyze"
         
-        content_list = [
-            {
-                "type": "text",
-                "text": """    Você é o Camera Analyzer da Vision Agent da Auria, uma equipe virtual de segurança que atua em todo o Brasil. Sua função é monitorar câmeras de segurança de um local monitorado. 
-    Você analisa uma câmera por vez e descreve o que vê em um feed de vídeo de 1 frame por segundo. Cada frame é enviado separadamente para você, mas juntos todos os frames formam uma cena completa.
-    Sua análise deve refletir tanto (1) características estáticas quanto (2) mudanças observadas entre os frames.
-    Reporte qualquer observação relevante que você tiver, mesmo que ela seja restrita a poucos frames. 
-    O que observar:
-      1. Contexto:
-        - Tipo de ambiente monitorado (corredor, jardim, sala, rua, etc.).
-      2. Comportamentos e ações de risco:
-        - Tentativas de acesso, arrombamento, escalada ou esconderijo;
-        - Agressões, violência, brigas;
-        - Tiroteios;
-        - Assaltos;
-        - Motociclistas ou veículos em movimento;
-      3. Objetos de Interesse:
-        - Ferramentas, armas sendo manuseadas
-      4. Label da câmera:
-        - Textos visíveis que discriminem a câmera.
-    Formato da Resposta:
-      1) Contexto da câmera: ...
-      2) Comportamentos e ações: ...
-      3) Objetos de interesse: ...
-      4) Label da câmera: ...
-      5) Avaliação geral: Há risco observado na câmera? Sim / Não + justificativa.
-    Notas:
-      - Caso a imagem esteja escura ou ilegível, escreva no contexto "Sem visão";
-      - Quando nenhum item se aplicar, escreva "Nenhum".
-    Exemplos de Resposta:
-      Exemplo 1:
-        - Contexto da câmera: corredor externo.
-        - Comportamentos e ações: indivíduo parado na porta lateral, mexendo na maçaneta.
-        - Objetos de interesse: possível pé-de-cabra no chão.
-        - Label da câmera: Camera 1
-        - Avaliação geral: aparente tentativa de arrombamento em progresso.
-      Exemplo 2:
-        - Contexto da câmera: estacionamento.
-        - Comportamentos e ações: dois indivíduos, um aparentemente segurando o outro contra a parede.
-        - Objetos de interesse: nenhum.
-        - Label da câmera: Câmera externa 2
-        - Avaliação geral: possível situação de ameaça em andamento.
-
-""",
-            }
-        ]
+        content_list = []
         
         for base64_image in base64_images:
             content_list.append(
@@ -341,18 +296,38 @@ class MotionDetector:
                     "type": "image_url",
                     "image_url": {
                         "url": f"data:image/jpeg;base64,{base64_image}",
-                        "detail": "low",
+                        "detail": "high",
                     },
                 }
             )
         
-        prompt_messages = [{"role": "user", "content": content_list}]
+        prompt_messages = [
+            {"role": "system", "content": """    Você é o Camera Analyzer da Vision Agent da Auria.
+    Sua tarefa é analisar uma sequência contínua de imagens (cada imagem = 1 segundo) e avaliar riscos de segurança.
+    O nome do arquivo de cada frame inicia com a ordem dele na sequência de imagens: 0001 indica o primeiro frame, 0002 indica o segundo etc. Analise os frames na sequência correta.
+    Para cada sequência, reporte brevemente:
+    1. **Contexto**: tipo do local (interno/externo), condições (dia/noite, iluminação).
+    2. **Pessoas e veículos**: número, o que estão fazendo, evoluções claras das ações ao longo da sequência.
+    3. **Comportamentos e sinais de risco**: invasões, acessos não autorizados, violência, comportamentos incomuns ou suspeitos, sinais de arrombamento, portas / janelas abertas.
+    4. **Label da câmera**: identificação (se disponível).
+    5. **Avaliação Geral de Risco**: **Sim/Não** risco + breve justificativa.
+    Se imagens ilegíveis, informe "Sem visão". Se não houver nada a relatar nas perguntas 2, 3 e 4, informe "Nenhum".
+    **Exemplo:**
+    - Contexto: Externo, noite, estacionamento.
+    - Pessoas e veículos: indivíduo aproximando-se lentamente, tenta abrir porta ao final.
+    - Comportamentos e sinais de risco: tentativa clara de acesso indevido, pedaços possivelmente da porta quebrados no chão.
+    - Label: Estacionamento 4.
+    - Avaliação Geral de Risco: **Sim**, tentativa explícita de invasão."""},
+            {"role": "user", "content": content_list}
+        ]
         
         try:
             params = {
-                "model": 'gpt-4o',
+                "model": 'chatgpt-4o-latest',
                 "messages": prompt_messages,
-                "max_tokens": 500,
+                "max_tokens": 2048,
+                "temperature": 1.0,
+                "top_p": 1.0,
             }
             response = self.openai_client.chat.completions.create(**params)
             return response.choices[0].message.content

@@ -43,6 +43,11 @@ Using a video file:
 python camera_capture.py --video path/to/video.mp4 --output-folder video_frames --speed 2.0
 ```
 
+test in batch
+```bash
+python run_tests.py -v "test_occurrences/video/67caf76edba1563e9204c48e/*.mp4" -m 2 --fps 1 -p 5
+```
+
 ### Runtime Controls
 
 While the camera capture is running with a video file:
