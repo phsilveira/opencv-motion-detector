@@ -25,11 +25,12 @@ import json
 import base64
 import logging
 import asyncio
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 from datetime import datetime, timedelta
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from dotenv import load_dotenv
+from collections import deque
 
 # Try to import OpenAI, but don't fail if it's not available
 try:
@@ -94,6 +95,9 @@ class MotionDetector:
         self.processed_files = set()
         self.min_size_for_movement = 0
         self.frame_area = 0
+        
+        # Buffer to store recent frames for saving when motion is detected
+        self.frame_buffer = deque(maxlen=max(10, self.minimum_motion_frames * 2))  # Store more frames than needed
         
         # Event tracking variables
         self.current_event_id = None
@@ -382,11 +386,11 @@ class MotionDetector:
                 logger.error(f"Error reading image: {image_path}")
                 return
             
+            # Store the frame and path in the buffer
+            self.frame_buffer.append((image_path, frame))
+            
             # Detect motion
             motion_detected, motion_rects = self.detect_motion(frame)
-            
-            # Update event status
-            self.check_event_status()
             
             # Create a copy for visualization
             display_frame = frame.copy()
@@ -396,35 +400,25 @@ class MotionDetector:
                 for (x, y, w, h) in motion_rects:
                     cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
             
+            # Check if this is the first frame that triggered motion detection
+            first_motion_detected = (self.consecutive_motion_frames == self.minimum_motion_frames)
+            
+            # Update event status (before saving images)
+            self.check_event_status()
+            
             # Add text overlay
             if motion_detected:
                 text = f"Motion Detected ({self.motion_counter})"
                 color = (0, 0, 255)  # Red
                 
-                # If motion is active, copy the file to the event output folder
-                filename = os.path.basename(image_path)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # If motion is active, save the current frame
+                self._save_frame(image_path, frame)
                 
-                # Determine output directory based on event status
-                output_dir = self.get_event_directory()
-                
-                # Create output filename
-                if self.current_event_id and self.event_gap > 0:
-                    self.event_frame_count += 1
-                    new_filename = f"{self.event_frame_count:04d}_{filename}"
-                else:
-                    new_filename = f"motion_{timestamp}_{filename}"
-                
-                # Create the full output path
-                output_path = os.path.join(output_dir, new_filename)
-                
-                # Copy the file
-                shutil.copy2(image_path, output_path)
-                logger.info(f"Motion detected: Copied {filename} to {output_path}")
-                
-                # Add to event images for analysis
-                if self.current_event_id:
-                    self.event_images.append(output_path)
+                # If this is the first frame that triggered motion, also save buffered frames
+                if first_motion_detected and len(self.frame_buffer) > 1:
+                    # Save all frames in the buffer except the current one (which was just saved)
+                    for i, (buffered_path, buffered_frame) in enumerate(list(self.frame_buffer)[:-1]):
+                        self._save_frame(buffered_path, buffered_frame, prefix=f"pre{i+1}_")
             else:
                 text = "No Motion"
                 color = (0, 255, 0)  # Green
@@ -470,7 +464,41 @@ class MotionDetector:
             
         except Exception as e:
             logger.error(f"Error processing image {image_path}: {e}")
+    
+    def _save_frame(self, image_path, frame, prefix=""):
+        """Save a frame to the output directory."""
+        try:
+            filename = os.path.basename(image_path)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
+            # Determine output directory based on event status
+            output_dir = self.get_event_directory()
+            
+            # Create output filename
+            if self.current_event_id and self.event_gap > 0:
+                self.event_frame_count += 1
+                new_filename = f"{prefix}{self.event_frame_count:04d}_{filename}"
+            else:
+                new_filename = f"{prefix}motion_{timestamp}_{filename}"
+            
+            # Create the full output path
+            output_path = os.path.join(output_dir, new_filename)
+            
+            # Save the file (either copy original or write new frame)
+            if prefix == "":  # For current frame, copy the original
+                shutil.copy2(image_path, output_path)
+            else:  # For buffered frames, write the frame directly
+                cv2.imwrite(output_path, frame)
+                
+            logger.info(f"Saved frame: {new_filename}")
+            
+            # Add to event images for analysis
+            if self.current_event_id:
+                self.event_images.append(output_path)
+                
+        except Exception as e:
+            logger.error(f"Error saving frame {image_path}: {e}")
+
     def update_display(self):
         """Update the display with the current frame (call from main thread only)."""
         if self.current_display_frame is not None:

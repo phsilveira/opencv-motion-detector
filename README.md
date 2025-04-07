@@ -210,3 +210,45 @@ You can also set up the event analyzer to run automatically at regular intervals
 4. The motion watcher will detect motion in these images and copy frames with motion to the "motion_detected" folder
 
 You can run both scripts with custom parameters to suit your environment and needs.
+
+
+Scans the motion_detected directory for event folders
+Identifies which events don't have analysis files (or processes all if --force is used)
+For each event folder:
+Collects the image files and sorts them by sequence
+Sends them to OpenAI's vision API with the same prompt used in motion_watcher.py
+Saves the analysis results in both text and JSON format
+Features:
+
+Command-line options to customize behavior:
+
+--input-folder: Specify a different base folder
+--max-images: Limit how many images to analyze per event (default: 20)
+--model: Choose the OpenAI model (default: chatgpt-4o-latest)
+--force: Reanalyze events even if they already have analysis files
+--start-from: Start analysis from a specific event ID
+--filter: Only analyze events with a specific string in their ID
+--dry-run: Show what would be analyzed without making API calls
+--api-key: Provide OpenAI API key (otherwise reads from environment)
+Progress tracking using tqdm
+
+Error handling for API failures or image loading issues
+
+Logging with detailed information about the analysis process
+
+To use the script:
+
+# Basic usage (reads API key from environment variable)
+python batch_analyze_events.py
+
+# Specify a different folder and more options
+python batch_analyze_events.py -i /path/to/events --max-images 10 --force
+
+# Start from a specific event and only process a subset
+python batch_analyze_events.py --start-from event_20250402 --filter 20250402
+
+The script requires the following Python packages:
+
+openai
+python-dotenv
+tqdm
