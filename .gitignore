@@ -43,3 +43,6 @@ motion_detected/
 *.jpg
 *.png
 *.jpeg
+*.txt
+*.json
+*.zip

@@ -252,3 +252,5 @@ The script requires the following Python packages:
 openai
 python-dotenv
 tqdm
+
+python yolo_detector.py --input motion_detected/ --output-dir output/ --recursive --preserve-structure --debug

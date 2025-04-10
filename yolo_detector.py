@@ -138,12 +138,13 @@ class YOLODetector:
             "detection_count": len(detections)
         }
     
-    def draw_debug_image(self, image_path: str, results: Dict) -> str:
+    def draw_debug_image(self, image_path: str, results: Dict, output_dir: Optional[str] = None) -> str:
         """Draw bounding boxes on image and save it.
         
         Args:
             image_path: Path to the original image
             results: Detection results dictionary
+            output_dir: Optional directory to save debug image to
             
         Returns:
             Path to the saved debug image
@@ -200,14 +201,21 @@ class YOLODetector:
                     font_thickness
                 )
             
-            # Create debug directory
-            original_dir = os.path.dirname(image_path)
-            debug_dir = os.path.join(original_dir, "debug")
-            os.makedirs(debug_dir, exist_ok=True)
+            # Determine where to save the debug image
+            if output_dir:
+                # Save in the specified output directory
+                image_filename = os.path.basename(image_path)
+                debug_image_path = os.path.join(output_dir, image_filename)
+            else:
+                # Create debug directory within the original image directory
+                original_dir = os.path.dirname(image_path)
+                debug_dir = os.path.join(original_dir, "debug")
+                os.makedirs(debug_dir, exist_ok=True)
+                
+                # Save the debug image
+                image_filename = os.path.basename(image_path)
+                debug_image_path = os.path.join(debug_dir, image_filename)
             
-            # Save the debug image
-            image_filename = os.path.basename(image_path)
-            debug_image_path = os.path.join(debug_dir, image_filename)
             cv2.imwrite(debug_image_path, img)
             logger.info(f"Saved debug image to {debug_image_path}")
             
@@ -269,16 +277,19 @@ class YOLODetector:
         if "error" not in results:
             self.save_json(results, output_dir)
             if debug:
-                self.draw_debug_image(image_path, results)
+                self.draw_debug_image(image_path, results, output_dir)
         return results
     
-    def process_directory(self, directory: str, output_dir: Optional[str] = None, debug: bool = False) -> List[Dict]:
+    def process_directory(self, directory: str, output_dir: Optional[str] = None, debug: bool = False, 
+                          recursive: bool = False, preserve_structure: bool = False) -> List[Dict]:
         """Process all images in a directory.
         
         Args:
             directory: Directory containing images
             output_dir: Optional directory to save JSON files to
             debug: Whether to generate debug images with bounding boxes
+            recursive: Whether to search for images in subdirectories recursively
+            preserve_structure: Whether to preserve the directory structure in output
             
         Returns:
             List of detection results dictionaries
@@ -287,20 +298,37 @@ class YOLODetector:
         image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp']
         image_files = []
         
-        for file in os.listdir(directory):
-            if any(file.lower().endswith(ext) for ext in image_extensions):
-                image_files.append(os.path.join(directory, file))
+        if recursive:
+            # Walk through all subdirectories
+            for root, _, files in os.walk(directory):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in image_extensions):
+                        image_files.append(os.path.join(root, file))
+        else:
+            # Just get files in the main directory
+            for file in os.listdir(directory):
+                if any(file.lower().endswith(ext) for ext in image_extensions):
+                    image_files.append(os.path.join(directory, file))
         
         if not image_files:
             logger.warning(f"No image files found in {directory}")
             return []
         
         # Process each image
-        logger.info(f"Processing {len(image_files)} images in {directory}")
+        logger.info(f"Processing {len(image_files)} images in {directory}{' and subdirectories' if recursive else ''}")
         results = []
         
         for image_path in tqdm(image_files, desc="Processing images"):
-            result = self.process_image(image_path, output_dir, debug)
+            if preserve_structure and output_dir:
+                # Get relative path to maintain directory structure
+                rel_path = os.path.relpath(os.path.dirname(image_path), directory)
+                # Create specific output directory for this file
+                specific_output_dir = os.path.join(output_dir, rel_path) if rel_path != '.' else output_dir
+                os.makedirs(specific_output_dir, exist_ok=True)
+            else:
+                specific_output_dir = output_dir
+                
+            result = self.process_image(image_path, specific_output_dir, debug)
             results.append(result)
         
         return results
@@ -320,6 +348,10 @@ def parse_arguments():
                       help='Confidence threshold (0-1, default: 0.25)')
     parser.add_argument('-d', '--debug', action='store_true',
                       help='Enable debug mode to output images with bounding boxes')
+    parser.add_argument('-r', '--recursive', action='store_true',
+                      help='Process images in subdirectories recursively')
+    parser.add_argument('-p', '--preserve-structure', action='store_true',
+                      help='Preserve directory structure in output')
     
     return parser.parse_args()
 
@@ -339,7 +371,13 @@ def main():
         
         elif os.path.isdir(args.input):
             logger.info(f"Processing directory: {args.input}")
-            detector.process_directory(args.input, args.output_dir, args.debug)
+            detector.process_directory(
+                args.input, 
+                args.output_dir, 
+                args.debug, 
+                args.recursive, 
+                args.preserve_structure
+            )
         
         else:
             logger.error(f"Input path does not exist: {args.input}")
