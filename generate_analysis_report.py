@@ -8,6 +8,7 @@ from datetime import datetime
 import logging
 import numpy as np
 import yaml
+import json
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 
 # Configure logging
@@ -107,18 +108,26 @@ def parse_image_filename(filename):
         logger.warning(f"Error parsing filename {filename}: {e}")
         return None, None
 
-def extract_section(text, section_name):
+def extract_section(text, section_name, format_type="default"):
     """Extract content of a specific section from analysis text"""
     patterns = {
-        "Contexto": r'\*\*Contexto\*\*:\s*(.*?)(?=-\s*\*\*|\Z)',
-        "Pessoas e veículos": r'\*\*Pessoas e veículos\*\*:\s*(.*?)(?=-\s*\*\*|\Z)',
-        "Comportamentos e sinais de risco": r'\*\*Comportamentos e sinais de risco\*\*:\s*(.*?)(?=-\s*\*\*|\Z)',
-        "Label": r'\*\*Label\*\*:\s*(.*?)(?=-\s*\*\*|\Z)',
-        "Avaliação Geral de Risco": r'\*\*Avaliação Geral de Risco\*\*:\s*(.*?)(?=\Z)'
+        "default": {
+            "Contexto": r'\*\*Contexto\*\*:\s*(.*?)(?=-\s*\*\*|\Z)',
+            "Pessoas e veículos": r'\*\*Pessoas e veículos\*\*:\s*(.*?)(?=-\s*\*\*|\Z)',
+            "Comportamentos e sinais de risco": r'\*\*Comportamentos e sinais de risco\*\*:\s*(.*?)(?=-\s*\*\*|\Z)',
+            "Label": r'\*\*Label\*\*:\s*(.*?)(?=-\s*\*\*|\Z)',
+            "Avaliação Geral de Risco": r'\*\*Avaliação Geral de Risco\*\*:\s*(.*?)(?=\Z)'
+        },
+        "detailed": {
+            "Contexto": r'-\s*\*\*Contexto\*\*:\s*(.*?)(?=-\s*\*\*|\Z)',
+            "Observações": r'-\s*\*\*Observações\*\*:\s*(.*?)(?=-\s*\*\*|\Z)',
+            "Avaliação de Risco": r'-\s*\*\*Avaliação de Risco\*\*:\s*(.*?)(?=-\s*\*\*|\Z)',
+            "Grau de Confiança na Avaliação de Risco": r'-\s*\*\*Grau de Confiança na Avaliação de Risco\*\*:\s*(.*?)(?=\Z)'
+        }
     }
     
-    if section_name in patterns:
-        pattern = patterns[section_name]
+    if format_type in patterns and section_name in patterns[format_type]:
+        pattern = patterns[format_type][section_name]
         match = re.search(pattern, text, re.DOTALL)
         if match:
             result = match.group(1).strip()
@@ -126,14 +135,31 @@ def extract_section(text, section_name):
     
     return "N/A"
 
-def parse_event_folder(event_folder):
+def parse_event_folder(event_folder, format_type=None):
     """Parse an event folder and extract relevant information"""
     folder_name = os.path.basename(event_folder)
     image_count = count_images(event_folder)
     first_image_path, first_image_filename = get_first_image(event_folder)
     
     cam_id, event_datetime = parse_image_filename(first_image_filename)
-    scenario_type = classify_camera_scenario(first_image_path)
+    
+    # Check for analysis.json first
+    analysis_json_file = os.path.join(event_folder, "analysis.json")
+    scenario_type = None
+    
+    if os.path.exists(analysis_json_file):
+        try:
+            with open(analysis_json_file, 'r', encoding='utf-8') as f:
+                analysis_json = json.load(f)
+                if "scenario_type" in analysis_json:
+                    scenario_type = analysis_json["scenario_type"]
+                    logger.info(f"Found scenario_type '{scenario_type}' in analysis.json for {folder_name}")
+        except Exception as e:
+            logger.warning(f"Error reading analysis.json in {folder_name}: {e}")
+    
+    # Fall back to classification function if needed
+    if scenario_type is None:
+        scenario_type = classify_camera_scenario(first_image_path)
     
     analysis_file = os.path.join(event_folder, "analysis.txt")
     
@@ -151,36 +177,59 @@ def parse_event_folder(event_folder):
             "cam_id": cam_id,
             "event_datetime": event_datetime,
             "contexto": "N/A",
-            "pessoas": "N/A",
-            "comportamentos": "N/A",
             "label": "N/A",
             "avaliacao": "N/A",
-            "scenario_type": scenario_type
+            "scenario_type": scenario_type,
+            "format_type": format_type or "default"
         }
     
     try:
         with open(analysis_file, 'r', encoding='utf-8') as f:
             content = f.read()
             
-            contexto = extract_section(content, "Contexto")
-            pessoas = extract_section(content, "Pessoas e veículos")
-            comportamentos = extract_section(content, "Comportamentos e sinais de risco")
-            label = extract_section(content, "Label")
-            avaliacao = extract_section(content, "Avaliação Geral de Risco")
+            # Auto-detect format if not specified
+            detected_format = format_type or detect_format_type(content)
             
-            return {
-                "folder_name": folder_name,
-                "image_count": image_count,
-                "first_image": first_image_path,
-                "cam_id": cam_id,
-                "event_datetime": event_datetime,
-                "contexto": contexto,
-                "pessoas": pessoas,
-                "comportamentos": comportamentos,
-                "label": label,
-                "avaliacao": avaliacao,
-                "scenario_type": scenario_type
-            }
+            if detected_format == "default":
+                contexto = extract_section(content, "Contexto", "default")
+                pessoas = extract_section(content, "Pessoas e veículos", "default")
+                comportamentos = extract_section(content, "Comportamentos e sinais de risco", "default")
+                label = extract_section(content, "Label", "default")
+                avaliacao = extract_section(content, "Avaliação Geral de Risco", "default")
+                
+                return {
+                    "folder_name": folder_name,
+                    "image_count": image_count,
+                    "first_image": first_image_path,
+                    "cam_id": cam_id,
+                    "event_datetime": event_datetime,
+                    "contexto": contexto,
+                    "pessoas": pessoas,
+                    "comportamentos": comportamentos,
+                    "label": label,
+                    "avaliacao": avaliacao,
+                    "scenario_type": scenario_type,
+                    "format_type": "default"
+                }
+            else:  # detailed format
+                contexto = extract_section(content, "Contexto", "detailed")
+                observacoes = extract_section(content, "Observações", "detailed")
+                avaliacao_risco = extract_section(content, "Avaliação de Risco", "detailed")
+                grau_confianca = extract_section(content, "Grau de Confiança na Avaliação de Risco", "detailed")
+                
+                return {
+                    "folder_name": folder_name,
+                    "image_count": image_count,
+                    "first_image": first_image_path,
+                    "cam_id": cam_id,
+                    "event_datetime": event_datetime,
+                    "contexto": contexto,
+                    "observacoes": observacoes,
+                    "avaliacao": avaliacao_risco,
+                    "grau_confianca": grau_confianca,
+                    "scenario_type": scenario_type,
+                    "format_type": "detailed"
+                }
     except Exception as e:
         logger.error(f"Error processing {analysis_file}: {e}")
         return {
@@ -190,19 +239,17 @@ def parse_event_folder(event_folder):
             "cam_id": cam_id,
             "event_datetime": event_datetime,
             "contexto": f"ERROR: {str(e)}",
-            "pessoas": "N/A",
-            "comportamentos": "N/A",
-            "label": "N/A",
             "avaliacao": "N/A",
-            "scenario_type": scenario_type
+            "scenario_type": scenario_type,
+            "format_type": format_type or "default"
         }
 
 def is_dangerous_camera(cam_id):
     """Determine if the camera ID is for a dangerous event"""
     dangerous_labels = [
-        'walk', 'lying', 'sit', 'hit', 'throw', 
-        'sneak', 'fall', 'struggle', 'kick', 
-        'grab', 'gun', 'run', 'videoplayback', 
+        'hit', 'throw', 
+        'struggle', 'kick', 
+        'gun', 'videoplayback', 
         'altercation', 'burglary', 'climbing-wall',
         'break-in', 'car-break-in',  'robbery',
     ]
@@ -212,14 +259,43 @@ def is_dangerous_camera(cam_id):
     
     return any(label.lower() in str(cam_id).lower() for label in dangerous_labels)
 
-def is_predicted_dangerous(avaliacao):
+def is_predicted_dangerous(avaliacao, format_type="default"):
     """Determine if the event is predicted as dangerous based on avaliacao"""
     if avaliacao is None or avaliacao == "N/A":
         return False
     
-    return "**Sim**" in avaliacao
+    if format_type == "default":
+        return "**Sim**" in avaliacao
+    elif format_type == "detailed":
+        return "Alto" in avaliacao.split('.')[0]  # Check before justification
+    
+    return False
 
-def generate_report(base_folder="motion_detected", output_file=None):
+def detect_format_type(analysis_content):
+    """Detect the format type of the analysis content"""
+    if re.search(r'-\s*\*\*Observações\*\*:', analysis_content):
+        return "detailed"
+    return "default"
+
+def extract_confidence_level(grau_confianca):
+    """Extract confidence level from the grau_confianca field"""
+    if grau_confianca is None or grau_confianca == "N/A":
+        return "Unknown"
+    
+    # Handle non-string types (like float or int)
+    if not isinstance(grau_confianca, str):
+        return "Unknown"
+    
+    if "Alto" in grau_confianca:
+        return "Alto"
+    elif "Médio" in grau_confianca or "Medio" in grau_confianca:
+        return "Médio"
+    elif "Baixo" in grau_confianca:
+        return "Baixo"
+    else:
+        return "Unknown"
+
+def generate_report(base_folder="motion_detected", output_file=None, format_type=None):
     """Generate a report of all event folders"""
     logger.info(f"Scanning folder: {base_folder}")
     
@@ -235,13 +311,21 @@ def generate_report(base_folder="motion_detected", output_file=None):
     results = []
     for folder in event_folders:
         logger.info(f"Processing folder: {os.path.basename(folder)}")
-        data = parse_event_folder(folder)
+        data = parse_event_folder(folder, format_type)
         results.append(data)
     
     df = pd.DataFrame(results)
     
     df['real'] = df['cam_id'].apply(is_dangerous_camera)
-    df['predict'] = df['avaliacao'].apply(is_predicted_dangerous)
+    
+    # Apply is_predicted_dangerous with the correct format type for each row
+    df['predict'] = df.apply(lambda row: is_predicted_dangerous(row['avaliacao'], row.get('format_type', 'default')), axis=1)
+    
+    # Extract confidence level for detailed format
+    if 'grau_confianca' in df.columns:
+        # First make sure we handle missing values
+        df['grau_confianca'] = df['grau_confianca'].fillna("N/A")
+        df['confidence_level'] = df['grau_confianca'].apply(extract_confidence_level)
     
     if output_file is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -259,6 +343,8 @@ def generate_report(base_folder="motion_detected", output_file=None):
     
     if len(df) > 0:
         try:
+            # Overall metrics
+            print("\n=== OVERALL METRICS ===")
             y_true = np.array(df['real'])
             y_pred = np.array(df['predict'])
             
@@ -269,25 +355,197 @@ def generate_report(base_folder="motion_detected", output_file=None):
             recall = recall_score(y_true, y_pred, zero_division=0)
             f1 = f1_score(y_true, y_pred, zero_division=0)
             
-            print("\n=== Confusion Matrix ===")
+            print("\n=== Overall Confusion Matrix ===")
             print("              Predicted")
             print("              Not Dangerous  Dangerous")
             print(f"Actual Not Dangerous  {cm[0][0]:12d}  {cm[0][1]:9d}")
             print(f"      Dangerous       {cm[1][0]:12d}  {cm[1][1]:9d}")
             
-            print("\n=== Classification Metrics ===")
+            print("\n=== Overall Classification Metrics ===")
             print(f"Accuracy:  {accuracy:.4f}")
             print(f"Precision: {precision:.4f}")
             print(f"Recall:    {recall:.4f}")
             print(f"F1 Score:  {f1:.4f}")
+            
+            # Metrics for each confidence level if we have detailed format
+            if 'confidence_level' in df.columns and len(df[df['format_type'] == 'detailed']) > 0:
+                print("\n\n=== METRICS BY CONFIDENCE LEVEL ===")
+                confidence_levels = ['Alto', 'Médio', 'Baixo']
+                
+                for confidence in confidence_levels:
+                    # Filter dataframe for current confidence level
+                    conf_df = df[df['confidence_level'] == confidence]
+                    
+                    if len(conf_df) == 0:
+                        print(f"\n--- No data found for confidence level: {confidence} ---")
+                        continue
+                    
+                    print(f"\n=== CONFIDENCE LEVEL: {confidence.upper()} ({len(conf_df)} events) ===")
+                    
+                    # Calculate metrics for this confidence level
+                    y_true_conf = np.array(conf_df['real'])
+                    y_pred_conf = np.array(conf_df['predict'])
+                    
+                    # Skip if we don't have both classes
+                    if len(set(y_true_conf)) < 2 or len(set(y_pred_conf)) < 2:
+                        print(f"Warning: Not enough class variation for {confidence} confidence. Classes found: Real {set(y_true_conf)}, Predicted {set(y_pred_conf)}")
+                        continue
+                    
+                    cm_conf = confusion_matrix(y_true_conf, y_pred_conf)
+                    
+                    accuracy_conf = accuracy_score(y_true_conf, y_pred_conf)
+                    precision_conf = precision_score(y_true_conf, y_pred_conf, zero_division=0)
+                    recall_conf = recall_score(y_true_conf, y_pred_conf, zero_division=0)
+                    f1_conf = f1_score(y_true_conf, y_pred_conf, zero_division=0)
+                    
+                    print("\n=== Confusion Matrix ===")
+                    print("              Predicted")
+                    print("              Not Dangerous  Dangerous")
+                    try:
+                        print(f"Actual Not Dangerous  {cm_conf[0][0]:12d}  {cm_conf[0][1]:9d}")
+                        print(f"      Dangerous       {cm_conf[1][0]:12d}  {cm_conf[1][1]:9d}")
+                    except IndexError:
+                        print("Incomplete confusion matrix due to missing classes")
+                    
+                    print("\n=== Classification Metrics ===")
+                    print(f"Accuracy:  {accuracy_conf:.4f}")
+                    print(f"Precision: {precision_conf:.4f}")
+                    print(f"Recall:    {recall_conf:.4f}")
+                    print(f"F1 Score:  {f1_conf:.4f}")
+            
+            # Metrics for each scenario type
+            scenario_types = [
+                'camera_analyzer_prompt_external_street',
+                'camera_analyzer_prompt_internal_closed',
+                'camera_analyzer_prompt_internal_to_outside'
+            ]
+            
+            print("\n\n=== METRICS BY SCENARIO TYPE ===")
+            for scenario in scenario_types:
+                print(f"\n--- SCENARIO: {scenario} ---")
+                
+                # Filter dataframe for current scenario
+                scenario_df = df[df['scenario_type'] == scenario]
+                
+                if len(scenario_df) == 0:
+                    print(f"No data found for scenario type: {scenario}")
+                    continue
+                
+                print(f"Number of events: {len(scenario_df)}")
+                
+                # Calculate metrics for this scenario
+                y_true_scenario = np.array(scenario_df['real'])
+                y_pred_scenario = np.array(scenario_df['predict'])
+                
+                # Skip if we don't have both classes
+                if len(set(y_true_scenario)) < 2 or len(set(y_pred_scenario)) < 2:
+                    print(f"Warning: Not enough class variation for {scenario}. Classes found: Real {set(y_true_scenario)}, Predicted {set(y_pred_scenario)}")
+                    continue
+                
+                cm_scenario = confusion_matrix(y_true_scenario, y_pred_scenario)
+                
+                accuracy_scenario = accuracy_score(y_true_scenario, y_pred_scenario)
+                precision_scenario = precision_score(y_true_scenario, y_pred_scenario, zero_division=0)
+                recall_scenario = recall_score(y_true_scenario, y_pred_scenario, zero_division=0)
+                f1_scenario = f1_score(y_true_scenario, y_pred_scenario, zero_division=0)
+                
+                print("\n=== Confusion Matrix ===")
+                print("              Predicted")
+                print("              Not Dangerous  Dangerous")
+                try:
+                    print(f"Actual Not Dangerous  {cm_scenario[0][0]:12d}  {cm_scenario[0][1]:9d}")
+                    print(f"      Dangerous       {cm_scenario[1][0]:12d}  {cm_scenario[1][1]:9d}")
+                except IndexError:
+                    print("Incomplete confusion matrix due to missing classes")
+                
+                print("\n=== Classification Metrics ===")
+                print(f"Accuracy:  {accuracy_scenario:.4f}")
+                print(f"Precision: {precision_scenario:.4f}")
+                print(f"Recall:    {recall_scenario:.4f}")
+                print(f"F1 Score:  {f1_scenario:.4f}")
+                
+                # If we have detailed format, also do metrics by scenario AND confidence
+                if 'confidence_level' in df.columns and len(scenario_df[scenario_df['format_type'] == 'detailed']) > 0:
+                    confidence_levels = ['Alto', 'Médio', 'Baixo']
+                    
+                    for confidence in confidence_levels:
+                        # Filter to get data for this scenario and confidence level
+                        scen_conf_df = scenario_df[scenario_df['confidence_level'] == confidence]
+                        
+                        if len(scen_conf_df) == 0:
+                            continue  # Skip if no data
+                        
+                        print(f"\n--- SCENARIO: {scenario}, CONFIDENCE: {confidence} ({len(scen_conf_df)} events) ---")
+                        
+                        y_true_sc = np.array(scen_conf_df['real'])
+                        y_pred_sc = np.array(scen_conf_df['predict'])
+                        
+                        # Skip if we don't have both classes
+                        if len(set(y_true_sc)) < 2 or len(set(y_pred_sc)) < 2:
+                            print(f"Warning: Not enough class variation. Classes found: Real {set(y_true_sc)}, Predicted {set(y_pred_sc)}")
+                            continue
+                        
+                        try:
+                            cm_sc = confusion_matrix(y_true_sc, y_pred_sc)
+                            
+                            accuracy_sc = accuracy_score(y_true_sc, y_pred_sc)
+                            precision_sc = precision_score(y_true_sc, y_pred_sc, zero_division=0)
+                            recall_sc = recall_score(y_true_sc, y_pred_sc, zero_division=0)
+                            f1_sc = f1_score(y_true_sc, y_pred_sc, zero_division=0)
+                            
+                            print("\n=== Confusion Matrix ===")
+                            print("              Predicted")
+                            print("              Not Dangerous  Dangerous")
+                            print(f"Actual Not Dangerous  {cm_sc[0][0]:12d}  {cm_sc[0][1]:9d}")
+                            print(f"      Dangerous       {cm_sc[1][0]:12d}  {cm_sc[1][1]:9d}")
+                            
+                            print("\n=== Classification Metrics ===")
+                            print(f"Accuracy:  {accuracy_sc:.4f}")
+                            print(f"Precision: {precision_sc:.4f}")
+                            print(f"Recall:    {recall_sc:.4f}")
+                            print(f"F1 Score:  {f1_sc:.4f}")
+                        except Exception as e:
+                            print(f"Could not calculate metrics: {e}")
+                
         except Exception as e:
             logger.warning(f"Could not calculate metrics: {e}")
+            import traceback
+            logger.warning(traceback.format_exc())
     
     print("\n=== Analysis Report Summary ===")
     print(f"Total events analyzed: {len(results)}")
     print("\nSample of the report (first 5 rows):")
-    print(df[["folder_name", "image_count", "label", "avaliacao", "real", "predict", "scenario_type"]].head().to_string())
+    
+    # Adjust columns to show based on available format types in the data
+    display_columns = ["folder_name", "image_count", "avaliacao", "real", "predict", "scenario_type"]
+    if "format_type" in df.columns:
+        display_columns.append("format_type")
+    if "grau_confianca" in df.columns:
+        display_columns.append("grau_confianca")
+    if "confidence_level" in df.columns:
+        display_columns.append("confidence_level")
+    
+    print(df[display_columns].head().to_string())
     print(f"\nFull report saved to: {output_file}")
+    
+    # Breakdown by scenario type
+    print("\nBreakdown by scenario type:")
+    scenario_counts = df['scenario_type'].value_counts()
+    for scenario, count in scenario_counts.items():
+        print(f"  {scenario}: {count} events")
+    
+    if "format_type" in df.columns:
+        print("\nBreakdown by format type:")
+        format_counts = df['format_type'].value_counts()
+        for format_type, count in format_counts.items():
+            print(f"  {format_type}: {count} events")
+    
+    # Breakdown by confidence level (if detailed format exists)
+    if "confidence_level" in df.columns:
+        print("\nBreakdown by confidence level:")
+        confidence_counts = df['confidence_level'].value_counts()
+        for confidence, count in confidence_counts.items():
+            print(f"  {confidence}: {count} events")
     
     return df
 
@@ -299,7 +557,9 @@ if __name__ == "__main__":
                       help='Base folder containing event subfolders (default: motion_detected)')
     parser.add_argument('-o', '--output-file', 
                       help='Output file name (default: analysis_report_TIMESTAMP.csv)')
+    parser.add_argument('-f', '--format', choices=['default', 'detailed'],
+                      help='Format type for analysis files (default: auto-detect)')
     
     args = parser.parse_args()
     
-    df = generate_report(base_folder=args.input_folder, output_file=args.output_file)
+    df = generate_report(base_folder=args.input_folder, output_file=args.output_file, format_type=args.format)

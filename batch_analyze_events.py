@@ -8,10 +8,11 @@ import asyncio
 import argparse
 import glob
 import yaml
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
+import google.generativeai as genai
 from tqdm import tqdm
 
 # Load environment variables from .env file if it exists
@@ -32,19 +33,28 @@ class EventAnalyzer:
         """Initialize the event analyzer with given configuration."""
         self.base_folder = config.get("base_folder", "motion_detected")
         self.max_images_to_analyze = config.get("max_images", 100)
+        self.api_provider = config.get("api_provider", "openai")  # Default to OpenAI
         self.openai_api_key = config.get("openai_api_key") or os.getenv("OPENAI_API_KEY")
-        self.model = config.get("model", "gpt-4o")
+        self.gemini_api_key = config.get("gemini_api_key") or os.getenv("GEMINI_API_KEY")
+        self.model = config.get("model", "gpt-4o" if self.api_provider == "openai" else "gemini-pro-vision")
         self.force_reanalyze = config.get("force_reanalyze", False)
         self.start_from = config.get("start_from", None)
         self.dry_run = config.get("dry_run", False)
         self.filter = config.get("filter", None)
         self.prompts_file = config.get("prompts_file", "auria_camera_prompts.yaml")
+        self.include_metadata = config.get("include_metadata", False)
         
-        # Initialize OpenAI client
-        if not self.openai_api_key:
-            raise ValueError("OpenAI API key is required. Set it in .env file or pass via --api-key")
-        
-        self.openai_client = OpenAI(api_key=self.openai_api_key)
+        # Initialize API clients based on provider
+        if self.api_provider == "openai":
+            if not self.openai_api_key:
+                raise ValueError("OpenAI API key is required. Set it in .env file or pass via --api-key")
+            self.openai_client = OpenAI(api_key=self.openai_api_key)
+        elif self.api_provider == "gemini":
+            if not self.gemini_api_key:
+                raise ValueError("Google Gemini API key is required. Set it in .env file or pass via --gemini-api-key")
+            genai.configure(api_key=self.gemini_api_key)
+        else:
+            raise ValueError(f"Unsupported API provider: {self.api_provider}. Use 'openai' or 'gemini'")
         
         # Load camera prompts
         self.camera_prompts = self.load_camera_prompts()
@@ -125,6 +135,54 @@ class EventAnalyzer:
         except Exception as e:
             logger.error(f"Error getting image files from {event_folder}: {e}")
             return []
+    
+    def get_image_metadata(self, image_path: str) -> Optional[Dict]:
+        """Read and return metadata from a JSON file with the same name as the image."""
+        if not self.include_metadata:
+            return None
+            
+        try:
+            # Get the corresponding JSON file path
+            json_path = os.path.splitext(image_path)[0] + '.json'
+            
+            if not os.path.exists(json_path):
+                logger.debug(f"No metadata file found for {os.path.basename(image_path)}")
+                return None
+                
+            with open(json_path, 'r') as f:
+                metadata = json.load(f)
+                
+            # Extract only what we need - the filename and detections
+            result = {
+                "image_filename": os.path.basename(image_path),
+                "detections": [item["class"] for item in metadata.get("detections", [])]
+            }
+            
+            return result
+        except Exception as e:
+            logger.warning(f"Error reading metadata for {os.path.basename(image_path)}: {e}")
+            return None
+    
+    def format_metadata_for_prompt(self, snapshot_files: List[str]) -> str:
+        """Format metadata from images for inclusion in the system prompt."""
+        if not self.include_metadata:
+            return ""
+            
+        metadata_list = []
+        
+        for image_path in snapshot_files:
+            metadata = self.get_image_metadata(image_path)
+            if metadata:
+                metadata_list.append(metadata)
+        
+        if not metadata_list:
+            return ""
+            
+        # Format the metadata as a string for inclusion in the prompt
+        metadata_str = "\n\nImage Content Information:\n"
+        metadata_str += json.dumps(metadata_list, indent=2)
+        
+        return metadata_str
     
     async def analyze_all_events(self):
         """Find and analyze all events that need analysis."""
@@ -210,21 +268,26 @@ class EventAnalyzer:
             Respond with ONLY the category name, nothing else.
             """
             
-            # Create the API request
-            response = self.openai_client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": classification_prompt},
-                    {"role": "user", "content": [
-                        {"type": "image_url", 
-                         "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]}
-                ],
-                max_tokens=50
-            )
+            if self.api_provider == "openai":
+                # Create the OpenAI API request
+                response = self.openai_client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": classification_prompt},
+                        {"role": "user", "content": [
+                            {"type": "image_url", 
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                        ]}
+                    ],
+                    # max_tokens=50
+                )
+                result = response.choices[0].message.content.strip().lower()
+            else:  # gemini
+                image_bytes = base64.b64decode(base64_image)
+                model = genai.GenerativeModel(self.model)
+                response = model.generate_content([classification_prompt, {"mime_type": "image/jpeg", "data": image_bytes}])
+                result = response.text.strip().lower()
             
-            # Process the response
-            result = response.choices[0].message.content.strip().lower()
             logger.info(f"Camera classification result: {result}")
             
             # Map the classification to the appropriate prompt key
@@ -255,8 +318,23 @@ class EventAnalyzer:
         else:
             system_prompt = self.camera_prompts[scenario_type]["system_prompt"]
         
+        # Add metadata to the system prompt if requested
+        if self.include_metadata:
+            metadata_str = self.format_metadata_for_prompt(snapshot_files)
+            if metadata_str:
+                system_prompt += metadata_str
+                logger.info(f"Added metadata for {len(snapshot_files)} images to prompt")
+        
         logger.info(f"Using prompt for scenario: {scenario_type}")
         
+        # Process images based on the selected API provider
+        if self.api_provider == "openai":
+            return await self.analyze_with_openai(system_prompt, event_id, snapshot_files)
+        else:  # gemini
+            return await self.analyze_with_gemini(system_prompt, event_id, snapshot_files)
+    
+    async def analyze_with_openai(self, system_prompt: str, event_id: str, snapshot_files: List[str]) -> str:
+        """Analyze images using OpenAI's API."""
         # Prepare image content for API
         content_list = []
         for image_path in snapshot_files:
@@ -286,7 +364,7 @@ class EventAnalyzer:
             params = {
                 "model": self.model,
                 "messages": prompt_messages,
-                "max_tokens": 2048,
+                # "max_tokens": 2048,
                 "temperature": 1.0,
                 "top_p": 1.0,
             }
@@ -295,6 +373,52 @@ class EventAnalyzer:
         except Exception as e:
             logger.error(f"Error calling OpenAI API for event {event_id}: {e}")
             return f"Failed to analyze the snapshots: {str(e)}"
+    
+    async def analyze_with_gemini(self, system_prompt: str, event_id: str, snapshot_files: List[str]) -> str:
+        """Analyze images using Google Gemini's API."""
+        try:
+            # Prepare inputs for Gemini API
+            model = genai.GenerativeModel(self.model)
+            prompt_parts = [system_prompt]
+            
+            # Add images to the prompt
+            images_added = 0
+            for image_path in snapshot_files:
+                try:
+                    with open(image_path, "rb") as f:
+                        image_bytes = f.read()
+                    
+                    prompt_parts.append({
+                        "mime_type": "image/jpeg",
+                        "data": image_bytes
+                    })
+                    images_added += 1
+                    
+                    # # Gemini has limitations on the number of images in a single request
+                    # # Check after each image to stay within limits
+                    # if images_added >= 16:  # Gemini's limit for multiple images
+                    #     break
+                        
+                except Exception as img_err:
+                    logger.error(f"Error processing image {os.path.basename(image_path)}: {img_err}")
+            
+            if images_added == 0:
+                return "No valid images to analyze"
+            
+            logger.info(f"Sending analysis request to Gemini API for event {event_id} with {images_added} images")
+            
+            # Generate content with Gemini
+            response = model.generate_content(prompt_parts)
+            
+            if hasattr(response, 'text'):
+                return response.text
+            else:
+                logger.error(f"Unexpected response format from Gemini: {response}")
+                return "Error: Unexpected response format from Gemini API"
+                
+        except Exception as e:
+            logger.error(f"Error calling Gemini API for event {event_id}: {e}")
+            return f"Failed to analyze the snapshots with Gemini: {str(e)}"
     
     def encode_image(self, image_path: str) -> Optional[str]:
         """Encode an image to base64 for API transmission."""
@@ -316,6 +440,7 @@ class EventAnalyzer:
             "timestamp": datetime.now().isoformat(),
             "analysis": analysis,
             "scenario_type": scenario_type,
+            "api_provider": self.api_provider,
             "api_version": self.model
         }
         
@@ -338,12 +463,16 @@ def parse_arguments():
     
     parser.add_argument('-i', '--input-folder', default='motion_detected',
                         help='Base folder containing event subfolders (default: motion_detected)')
+    parser.add_argument('--api-provider', choices=['openai', 'gemini'], default='openai',
+                        help='API provider to use for analysis (default: openai)')
     parser.add_argument('--api-key', 
                         help='OpenAI API key (default: read from OPENAI_API_KEY environment variable)')
+    parser.add_argument('--gemini-api-key',
+                        help='Google Gemini API key (default: read from GEMINI_API_KEY environment variable)')
     parser.add_argument('--max-images', type=int, default=100,
                         help='Maximum number of images to analyze per event (default: 100)')
-    parser.add_argument('--model', default='gpt-4o',
-                        help='OpenAI model to use (default: gpt-4o)')
+    parser.add_argument('--model', 
+                        help='Model to use (default: gpt-4o for OpenAI, gemini-pro-vision for Gemini)')
     parser.add_argument('--force', action='store_true',
                         help='Force reanalysis of events even if they have existing analysis files')
     parser.add_argument('--start-from', 
@@ -354,6 +483,8 @@ def parse_arguments():
                         help='Show what would be analyzed without making API calls')
     parser.add_argument('--prompts-file', default='auria_camera_prompts.yaml',
                         help='YAML file containing camera prompts (default: auria_camera_prompts.yaml)')
+    parser.add_argument('--include-metadata', action='store_true',
+                        help='Include object detection metadata from JSON files in the system prompt')
     
     return parser.parse_args()
 
@@ -361,16 +492,23 @@ async def main():
     """Main entry point of the application."""
     args = parse_arguments()
     
+    # Set default model based on provider
+    if not args.model:
+        args.model = "gpt-4o" if args.api_provider == "openai" else "gemini-pro-vision"
+    
     config = {
         'base_folder': args.input_folder,
         'max_images': args.max_images,
+        'api_provider': args.api_provider,
         'openai_api_key': args.api_key,
+        'gemini_api_key': args.gemini_api_key,
         'model': args.model,
         'force_reanalyze': args.force,
         'start_from': args.start_from,
         'dry_run': args.dry_run,
         'filter': args.filter,
         'prompts_file': args.prompts_file,
+        'include_metadata': args.include_metadata,
     }
     
     try:

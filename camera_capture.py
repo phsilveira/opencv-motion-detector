@@ -20,7 +20,7 @@ import sys
 
 class CameraCapture:
     def __init__(self, source="rtsp://admin:rad001877@rc-uchida.dyndns.org:554/Streaming/Channels/102/", 
-                 output_folder="camera_frames", playback_speed=1.0, fast_extract=False, save_fps=1):
+                 output_folder="camera_frames", playback_speed=1.0, fast_extract=False, save_fps=1, headless=False):
         """Initialize the camera capture with specified parameters.
         
         Args:
@@ -29,6 +29,7 @@ class CameraCapture:
             playback_speed: Speed multiplier for video file playback (doesn't affect save rate)
             fast_extract: When True, skips display and processes video files at maximum speed (video files only)
             save_fps: Frames per second to save (default: 1)
+            headless: When True, disables GUI display
         """
         self.source = source
         self.output_folder = output_folder
@@ -36,6 +37,7 @@ class CameraCapture:
         self.frame_rate = save_fps  # Number of frames to save per second
         self.playback_speed = playback_speed
         self.fast_extract = fast_extract
+        self.headless = headless
         self.last_save_time = 0
         self.frame_counter = 0  # Sequential counter for all saved frames
         
@@ -64,6 +66,10 @@ class CameraCapture:
                 print("Fast extraction mode: Enabled (display disabled)")
         else:
             print(f"Using camera index: {source}")
+
+        # Print headless mode status
+        if self.headless:
+            print("Running in headless mode (no GUI display)")
 
         # Create output directory if it doesn't exist
         try:
@@ -147,7 +153,7 @@ class CameraCapture:
         try:
             self.setup_camera()
             print(f"Starting capture at {self.frame_rate} fps to folder: {self.output_folder}")
-            if not self.fast_extract or not self.is_video_file:
+            if not self.fast_extract and not self.is_video_file and not self.headless:
                 print("Press 'q' to quit")
             
             reconnect_attempts = 0
@@ -283,42 +289,48 @@ class CameraCapture:
                     self.last_save_time = current_time
                 
                 # Display the frame with timestamp and information overlay
-                current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                cv2.putText(frame, current_datetime, (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                
-                # Add source type to display
-                if self.is_rtsp:
-                    source_type = "RTSP Stream"
-                elif self.is_video_file:
-                    source_type = f"Video File ({video_position:.1f}s / {self.duration:.1f}s)"
-                else:
-                    source_type = f"Camera {self.source}"
+                if not self.headless:
+                    current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    cv2.putText(frame, current_datetime, (10, 30), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                     
-                cv2.putText(frame, f"Source: {source_type}", (10, 60),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-                cv2.putText(frame, f"Saving to: {self.output_folder}", (10, 90),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-                
-                # If it's a video file, show playback speed
-                if self.is_video_file:
-                    cv2.putText(frame, f"Playback: {self.playback_speed}x", (10, 120),
+                    # Add source type to display
+                    if self.is_rtsp:
+                        source_type = "RTSP Stream"
+                    elif self.is_video_file:
+                        source_type = f"Video File ({video_position:.1f}s / {self.duration:.1f}s)"
+                    else:
+                        source_type = f"Camera {self.source}"
+                        
+                    cv2.putText(frame, f"Source: {source_type}", (10, 60),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-                
-                cv2.imshow("Frame Capture (1 FPS Save)", frame)
-                
-                # Check for quit command and playback speed adjustments
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    break
-                elif key == ord('+') or key == ord('='):
+                    cv2.putText(frame, f"Saving to: {self.output_folder}", (10, 90),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+                    
+                    # If it's a video file, show playback speed
                     if self.is_video_file:
-                        self.playback_speed = min(10.0, self.playback_speed * 1.25)
-                        print(f"Playback speed increased to {self.playback_speed:.2f}x")
-                elif key == ord('-'):
-                    if self.is_video_file:
-                        self.playback_speed = max(0.25, self.playback_speed * 0.8)
-                        print(f"Playback speed decreased to {self.playback_speed:.2f}x")
+                        cv2.putText(frame, f"Playback: {self.playback_speed}x", (10, 120),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+                    
+                    cv2.imshow("Frame Capture (1 FPS Save)", frame)
+                
+                    # Check for quit command and playback speed adjustments
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        break
+                    elif key == ord('+') or key == ord('='):
+                        if self.is_video_file:
+                            self.playback_speed = min(10.0, self.playback_speed * 1.25)
+                            print(f"Playback speed increased to {self.playback_speed:.2f}x")
+                    elif key == ord('-'):
+                        if self.is_video_file:
+                            self.playback_speed = max(0.25, self.playback_speed * 0.8)
+                            print(f"Playback speed decreased to {self.playback_speed:.2f}x")
+                
+                # Check for keyboard interrupt in headless mode
+                if self.headless:
+                    # Since we don't have GUI, add a small sleep to prevent CPU overload
+                    time.sleep(0.01)
                 
                 # Calculate how long to wait to maintain proper playback speed
                 # (only relevant for video files)
@@ -337,7 +349,8 @@ class CameraCapture:
             # Clean up
             if self.cap is not None:
                 self.cap.release()
-            cv2.destroyAllWindows()
+            if not self.headless:
+                cv2.destroyAllWindows()
             print("Camera capture stopped")
 
 
@@ -363,6 +376,8 @@ def parse_arguments():
                         help='Enable fast extraction mode for video files (no display, maximum speed)')
     parser.add_argument('--fps', type=float, default=1.0,
                         help='Frames per second to save (default: 1.0)')
+    parser.add_argument('--headless', action='store_true',
+                        help='Run in headless mode (no GUI display)')
     
     return parser.parse_args()
 
@@ -384,7 +399,8 @@ def main():
         output_folder=args.output_folder,
         playback_speed=args.speed,
         fast_extract=args.fast,
-        save_fps=args.fps
+        save_fps=args.fps,
+        headless=args.headless
     )
     
     capture.run()

@@ -41,7 +41,7 @@ def find_video_files(path_pattern):
         sys.exit(1)
     return video_files
 
-def run_motion_watcher(min_area_percent=1, enable_analysis=True, persistence=10):
+def run_motion_watcher(min_area_percent=1, enable_analysis=False, persistence=10):
     """Start the motion watcher process"""
     cmd = [
         sys.executable, 
@@ -49,6 +49,7 @@ def run_motion_watcher(min_area_percent=1, enable_analysis=True, persistence=10)
         "-m", str(min_area_percent),
         "-p", str(persistence),
         "-n", "4",
+        "-o", "motion_detection_4fps",
     ]
     
     if enable_analysis:
@@ -71,7 +72,7 @@ def run_camera_capture(video_file, fps=1):
         "camera_capture.py",
         "--fps", str(fps),
         "-v", video_file,
-        "-s", "2.0",
+        "-s", "4.0",
     ]
     
     logger.info(f"Processing video: {video_file}")
@@ -91,7 +92,7 @@ def run_camera_capture(video_file, fps=1):
         logger.error(f"Error running camera_capture: {e}")
         return False
 
-def run_tests(video_pattern, min_area_percent=1, enable_analysis=True, fps=1, persistence=10):
+def run_tests(video_pattern, min_area_percent=1, enable_analysis=False, fps=4, persistence=10):
     """Run the full test process"""
     camera_frames_dir = "camera_frames"
     

@@ -9,7 +9,7 @@ detection algorithms to detect movement between consecutive frames.
 Usage:
     python motion_watcher.py [-i INPUT_FOLDER] [-o OUTPUT_FOLDER] [-t THRESHOLD] 
                             [-n MIN_FRAMES] [-p PERSISTENCE] [-e EVENT_GAP]
-                            [--enable-analysis] [--api-key API_KEY]
+                            [--enable-analysis] [--api-key API_KEY] [--headless]
 """
 
 import argparse
@@ -418,7 +418,7 @@ class MotionDetector:
                 if first_motion_detected and len(self.frame_buffer) > 1:
                     # Save all frames in the buffer except the current one (which was just saved)
                     for i, (buffered_path, buffered_frame) in enumerate(list(self.frame_buffer)[:-1]):
-                        self._save_frame(buffered_path, buffered_frame, prefix=f"pre{i+1}_")
+                        self._save_frame(buffered_path, buffered_frame)
             else:
                 text = "No Motion"
                 color = (0, 255, 0)  # Green
@@ -611,6 +611,8 @@ def parse_arguments():
                         help='OpenAI API key (default: read from OPENAI_API_KEY environment variable)')
     parser.add_argument('--max-images', type=int, default=5,
                         help='Maximum number of images to analyze per event (default: 5)')
+    parser.add_argument('--headless', action='store_true',
+                        help='Run in headless mode (no GUI display)')
     
     args = parser.parse_args()
     
@@ -673,75 +675,78 @@ def main():
         else:
             logger.info("Event analysis: Disabled")
         
-        logger.info("Press Ctrl+C to stop")
-        
-        # # Process existing files first
-        # event_handler.process_existing_files()
+        if args.headless:
+            logger.info("Running in headless mode (no GUI display)")
+        else:
+            logger.info("Press 'q' to quit, '+'/'-' to adjust threshold, '['/']' to adjust min frames, etc.")
         
         observer.start()
         
         # Main loop
         while True:
             time.sleep(0.1)
-            key = cv2.waitKey(1) & 0xFF
             
-            # Check for quit command
-            if key == ord('q'):
-                break
+            # In headless mode, we only check for keyboard interrupts, not key presses
+            if not args.headless:
+                key = cv2.waitKey(1) & 0xFF
+                
+                # Check for quit command
+                if key == ord('q'):
+                    break
+                
+                # Threshold adjustments
+                elif key == ord('+') or key == ord('='):
+                    detector.threshold = min(100, detector.threshold + 1)
+                    logger.info(f"Threshold increased to {detector.threshold}")
+                elif key == ord('-'):
+                    detector.threshold = max(1, detector.threshold - 1)
+                    logger.info(f"Threshold decreased to {detector.threshold}")
+                    
+                # Min motion frames adjustments
+                elif key == ord(']'):
+                    detector.minimum_motion_frames += 1
+                    logger.info(f"Minimum motion frames increased to {detector.minimum_motion_frames}")
+                elif key == ord('['):
+                    detector.minimum_motion_frames = max(1, detector.minimum_motion_frames - 1)
+                    logger.info(f"Minimum motion frames decreased to {detector.minimum_motion_frames}")
+                    
+                # Persistence adjustments
+                elif key == ord('p'):
+                    detector.motion_persistence += 10
+                    logger.info(f"Motion persistence increased to {detector.motion_persistence}")
+                elif key == ord('o'):
+                    detector.motion_persistence = max(1, detector.motion_persistence - 10)
+                    logger.info(f"Motion persistence decreased to {detector.motion_persistence}")
+                    
+                # Min area percentage adjustments
+                elif key == ord('a'):
+                    detector.update_min_area_percent(max(0.1, detector.min_area_percent - 1))
+                    logger.info(f"Min area percentage decreased to {detector.min_area_percent:.1f}%")
+                elif key == ord('s'):
+                    detector.update_min_area_percent(min(100, detector.min_area_percent + 1))
+                    logger.info(f"Min area percentage increased to {detector.min_area_percent:.1f}%")
+                    
+                # Event gap adjustments
+                elif key == ord('g'):
+                    if detector.event_gap > 0:
+                        detector.update_event_gap(max(0, detector.event_gap - 5))
+                    else:
+                        detector.update_event_gap(5)  # Switch from continuous to event mode
+                elif key == ord('h'):
+                    detector.update_event_gap(detector.event_gap + 5)
+                    
+                # Toggle continuous mode
+                elif key == ord('c'):
+                    if detector.event_gap > 0:
+                        detector.update_event_gap(0)  # Enable continuous mode
+                    else:
+                        detector.update_event_gap(60)  # Restore default event gap
+                
+                # Update display
+                detector.update_display()
             
-            # Threshold adjustments
-            elif key == ord('+') or key == ord('='):
-                detector.threshold = min(100, detector.threshold + 1)
-                logger.info(f"Threshold increased to {detector.threshold}")
-            elif key == ord('-'):
-                detector.threshold = max(1, detector.threshold - 1)
-                logger.info(f"Threshold decreased to {detector.threshold}")
-                
-            # Min motion frames adjustments
-            elif key == ord(']'):
-                detector.minimum_motion_frames += 1
-                logger.info(f"Minimum motion frames increased to {detector.minimum_motion_frames}")
-            elif key == ord('['):
-                detector.minimum_motion_frames = max(1, detector.minimum_motion_frames - 1)
-                logger.info(f"Minimum motion frames decreased to {detector.minimum_motion_frames}")
-                
-            # Persistence adjustments
-            elif key == ord('p'):
-                detector.motion_persistence += 10
-                logger.info(f"Motion persistence increased to {detector.motion_persistence}")
-            elif key == ord('o'):
-                detector.motion_persistence = max(1, detector.motion_persistence - 10)
-                logger.info(f"Motion persistence decreased to {detector.motion_persistence}")
-                
-            # Min area percentage adjustments
-            elif key == ord('a'):
-                detector.update_min_area_percent(max(0.1, detector.min_area_percent - 1))
-                logger.info(f"Min area percentage decreased to {detector.min_area_percent:.1f}%")
-            elif key == ord('s'):
-                detector.update_min_area_percent(min(100, detector.min_area_percent + 1))
-                logger.info(f"Min area percentage increased to {detector.min_area_percent:.1f}%")
-                
-            # Event gap adjustments
-            elif key == ord('g'):
-                if detector.event_gap > 0:
-                    detector.update_event_gap(max(0, detector.event_gap - 5))
-                else:
-                    detector.update_event_gap(5)  # Switch from continuous to event mode
-            elif key == ord('h'):
-                detector.update_event_gap(detector.event_gap + 5)
-                
-            # Toggle continuous mode
-            elif key == ord('c'):
-                if detector.event_gap > 0:
-                    detector.update_event_gap(0)  # Enable continuous mode
-                else:
-                    detector.update_event_gap(60)  # Restore default event gap
-                
-            # Process files from the queue
+            # Process files from the queue (both in GUI and headless mode)
             event_handler.process_queue()
-            
-            # Update display
-            detector.update_display()
     
     except KeyboardInterrupt:
         print("Stopping motion watcher...")
@@ -751,7 +756,8 @@ def main():
         event_handler.is_running = False
         observer.stop()
         observer.join()
-        cv2.destroyAllWindows()
+        if not args.headless:
+            cv2.destroyAllWindows()
         print("Motion watcher stopped")
 
 
